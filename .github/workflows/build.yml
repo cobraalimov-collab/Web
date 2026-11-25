@@ -1,0 +1,82 @@
+name: Build APK from zip
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - "alimovaura-ecosystem.zip"
+      - ".github/workflows/build.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unzip alimovaura-ecosystem.zip
+        run: |
+          set -e
+          test -f alimovaura-ecosystem.zip || { echo "alimovaura-ecosystem.zip not found in repo root"; exit 1; }
+          mkdir -p _unzipped
+          unzip -q -o alimovaura-ecosystem.zip -d _unzipped
+          echo "Extracted layout:"
+          find _unzipped -maxdepth 3 -type d | head -50
+
+      - name: Locate the Android project
+        id: locate
+        run: |
+          set -e
+          SETTINGS=$(find _unzipped -name "settings.gradle.kts" -not -path "*/node_modules/*" | head -n 1)
+          if [ -z "$SETTINGS" ]; then
+            SETTINGS=$(find _unzipped -name "settings.gradle" | head -n 1)
+          fi
+          if [ -z "$SETTINGS" ]; then
+            echo "No settings.gradle(.kts) found inside the zip"; exit 1
+          fi
+          DIR=$(dirname "$SETTINGS")
+          echo "Android project: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build debug APK
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: |
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --stacktrace --no-daemon
+          else
+            gradle assembleDebug --stacktrace --no-daemon
+          fi
+
+      - name: Collect app-debug.apk
+        run: |
+          set -e
+          APK=$(find "${{ steps.locate.outputs.dir }}" -path "*/outputs/apk/debug/*.apk" | head -n 1)
+          if [ -z "$APK" ]; then echo "APK not found"; exit 1; fi
+          mkdir -p out
+          cp "$APK" out/app-debug.apk
+          ls -lh out/app-debug.apk
+
+      - name: Upload app-debug.apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: out/app-debug.apk
+          if-no-files-found: error
